@@ -1,5 +1,5 @@
 /* --- Sensor Setup --- */
-#include "Adafruit_PM25AQI.h"
+//#include "Adafruit_PM25AQI.h"
 #include <Wire.h>
 #include <SPI.h>
 #include "math.h"
@@ -11,10 +11,30 @@
 #define SEALEVELPRESSURE_HPA (1013.25)
 
 // setup software serial for talking to PM2.5 sensor
-SoftwareSerial pmSerial(16, 17);
-Adafruit_PM25AQI aqi = Adafruit_PM25AQI();
+SoftwareSerial pmsSerial(16, 17);
+//Adafruit_PM25AQI aqi = Adafruit_PM25AQI();
 Adafruit_BME680 bme; // I2C
 
+// struct for storing raw PMS5003 Particlate matter data
+struct pms5003data {
+  uint16_t framelen;
+  uint16_t pm10_standard, pm25_standard, pm100_standard;
+  uint16_t pm10_env, pm25_env, pm100_env;
+  uint16_t particles_03um, particles_05um, particles_10um, particles_25um, particles_50um, particles_100um;
+  uint16_t unused;
+  uint16_t checksum;
+};
+
+// struct to contain all reported data
+struct data_struct {
+  float temp = 0;
+  float pressure = 0;
+  float humidity = 0;
+  float VOC = 0;
+  float lux = 0;
+  int AQI = 0;
+};
+ 
 // Store defined Air Quality Index break points
 int AQIlow[] = {0,51,101,151,201,301};
 int AQIhigh[] = {50,100,150,200,300,500};
@@ -32,9 +52,24 @@ enum AQIcategory
     invalid 
 };
 
+// create globally accessible struct instance to dump raw PM sensor data to
+struct pms5003data data;
+struct data_struct output_data;
+
+int luxSensorPin = 36;    // select the input pin for the potentiometer
+
+float rawRange = 4096; // 3.3v
+float logRange = 5.0; // 3.3v = 10^5 lux
+
+float RawToLux(float raw)
+{
+  float logLux = raw * logRange / rawRange;
+  return pow(10, logLux);
+}
+
+
 // based on PM2.5 concentration, get AQI category
 AQIcategory getRange(int pmCount){  
-  
   if (pmCount < PM2_5ConHigh[0])
   {/* constant-expression */
    return good;
@@ -72,22 +107,99 @@ int getAQI(int pmCount){
   return AQI;
 }
 
-// struct to contain all reported data
-struct air_data_struct {
-  float temp = 0;
-  float pressure = 0;
-  float humidity = 0;
-  float VOC = 0;
-  int AQI = 0;
-};
+// Serial interface funtion to read PM2.5 data to fix bug of Adafruit lib (not reading after a while)
+boolean readPMSdata(Stream *s) {
+  if (! s->available()) {
+    return false;
+  }
+  
+  // Read a byte at a time until we get to the special '0x42' start-byte
+  if (s->peek() != 0x42) {
+    s->read();
+    return false;
+  }
+ 
+  // Now read all 32 bytes
+  if (s->available() < 32) {
+    return false;
+  }
+    
+  uint8_t buffer[32];    
+  uint16_t sum = 0;
+  s->readBytes(buffer, 32);
+ 
+  // get checksum ready
+  for (uint8_t i=0; i<30; i++) {
+    sum += buffer[i];
+  }
+ 
+  /* debugging
+  for (uint8_t i=2; i<32; i++) {
+    Serial.print("0x"); Serial.print(buffer[i], HEX); Serial.print(", ");
+  }
+  Serial.println();
+  */
+  
+  // The data comes in endian'd, this solves it so it works on all platforms
+  uint16_t buffer_u16[15];
+  for (uint8_t i=0; i<15; i++) {
+    buffer_u16[i] = buffer[2 + i*2 + 1];
+    buffer_u16[i] += (buffer[2 + i*2] << 8);
+  }
+ 
+  // put it into a nice struct :)
+  memcpy((void *)&data, (void *)buffer_u16, 30);
+ 
+  if (sum != data.checksum) {
+    Serial.println("Checksum failure");
+    return false;
+  }
+  // success!
+  return true;
+}
+
+void reset_output_data(){
+    output_data.temp = 0;
+    output_data.pressure = 0;
+    output_data.humidity = 0;
+    output_data.VOC = 0;
+    output_data.AQI = 0;
+    output_data.lux = 0;
+}
+
+bool retry_logic(){
+    for(int j = 1; j <= 5; j++){
+       Serial.print("retry #");
+       Serial.println(j);
+       if (!readPMSdata(&pmsSerial)){  
+          // if we are not reading error condition, exit and return true that we got a valid datapoint
+          if(data.pm25_standard < 5000 && data.pm25_standard != 999 && data.pm25_standard != 66 && data.pm25_standard != 28 && data.pm25_standard != 151 && data.pm25_standard != 256 && data.pm25_standard != 322 && data.pm25_standard != 512 && data.pm25_standard != 578 && data.pm25_standard != 834 && data.pm25_standard != 768 && data.pm25_standard != 1024 && data.pm25_standard != 1090 && data.pm25_standard != 1280 && data.pm25_standard != 1346 && data.pm25_standard != 1536 && data.pm25_standard != 1858 && data.pm25_standard != 2048 && data.pm25_standard != 2114 && data.pm25_standard != 2304 && data.pm25_standard != 2370 && data.pm25_standard != 2560 && data.pm25_standard != 3072 && data.pm25_standard != 3138 && data.pm25_standard != 4096 && data.pm25_standard != 4674 && data.pm25_standard != 19712){
+              return true;
+          }
+       }
+       delay(500);
+    }
+    
+   // if all else fails restart serial connection
+    pmsSerial.end();
+    Serial.println("restarting PMS sensor serial...");
+    delay(1000);
+    pmsSerial.begin(9600);
+    while(!pmsSerial);
+    delay(1000);
+    return false;
+}
 
 // oversample & average out data 
-void collectData(int samples, int delay_time, struct air_data_struct &output){
-   int AQIsamples = samples;
-   int BMEsamples = samples;
+void collectData(int samples, int delay_time){
+   float AQIsamples = samples;
+   float BMEsamples = samples;
+   int last_reading = 0;
+   int bad_read_count = 0;
+   delay_time -= 300;
+   reset_output_data();
        
    for(int i = 0; i < samples; i++){
-      PM25_AQI_Data data;
       bool writeAQI = true;
       bool writeBME = true;
   
@@ -98,14 +210,8 @@ void collectData(int samples, int delay_time, struct air_data_struct &output){
           BMEsamples --;
           writeBME = false;
       }
-      delay(1);
-    
-      if (! aqi.read(&data)) {
-        Serial.println("Could not read from AQI");
-        AQIsamples --;
-        writeAQI = false;
-      }
-          
+      delay(100);
+
       // Obtain measurement results from BME680. Note that this operation isn't
       // instantaneous even if milli() >= endTime due to I2C/SPI latency.
       if (!bme.endReading()) {
@@ -115,26 +221,67 @@ void collectData(int samples, int delay_time, struct air_data_struct &output){
           writeBME = false;
         }
       }
+      delay(100);
 
+      // Obtain measurements from PM2.5 sensor, handles Serial disconnect and hung condition bugs
+      if (!readPMSdata(&pmsSerial)) {
+        Serial.println("Could not read from AQI");
+        AQIsamples --;
+        writeAQI = false;
+        delay(50);
+        //retry logic
+        if(retry_logic()){
+          AQIsamples ++;
+          writeAQI = true;
+        }
+      }
+      if(data.pm25_standard > 100 && data.pm25_standard == last_reading) {
+         Serial.println("Suspected bad AQI reading");
+         bad_read_count ++;
+         if(bad_read_count >=5){
+            AQIsamples -= 5;
+            writeAQI = false;
+            output_data.AQI = 0;
+         }
+      } else {
+         last_reading = data.pm25_standard;
+         bad_read_count = 0;
+      }
+
+
+      // Add datapoints to sum if they were successfully read
       if(writeBME){
-          output.temp += bme.temperature;
-          output.pressure += (bme.pressure/101325.0);
-          output.humidity += bme.humidity;
-          output.VOC += (bme.gas_resistance/1000.0);  
+          output_data.temp += bme.temperature;
+          output_data.pressure += (bme.pressure/101325.0);
+          output_data.humidity += bme.humidity;
+          output_data.VOC += (bme.gas_resistance/1000.0);  
       }
       if(writeAQI){
-          output.AQI += getAQI(data.pm25_standard); 
+          output_data.AQI += getAQI(data.pm25_standard); 
+          Serial.print("write AQI ");
+          Serial.println(getAQI(data.pm25_standard));
+          Serial.print("Raw PM2.5: ");
+          Serial.println(data.pm25_standard);
+      } else if (writeAQI){
+          AQIsamples --;
       }
-      
+      float raw_lux = analogRead(luxSensorPin);
+      float lux_value = 0;
+      lux_value = RawToLux(raw_lux);
+      output_data.lux += lux_value; 
       delay(delay_time);
    }
-    output.temp /= BMEsamples;
-    output.pressure /= BMEsamples;
-    output.humidity /= BMEsamples;
-    output.VOC /= BMEsamples;
-    output.AQI /= AQIsamples;
+   if(BMEsamples != 0){
+      output_data.temp /= BMEsamples;
+      output_data.pressure /= BMEsamples;
+      output_data.humidity /= BMEsamples;
+      output_data.VOC /= BMEsamples; 
+   }
+   if(AQIsamples != 0){
+      output_data.AQI /= AQIsamples;
+   }
+   output_data.lux /= samples;
 }
-
 
 
 /* --- WiFi Setup --- */
@@ -190,12 +337,9 @@ void setup() {
     while (1);
   }
 
-  pmSerial.begin(9600);
-  if (! aqi.begin_UART(&pmSerial)) { // connect to the sensor over software serial 
-    Serial.println("Could not find PM 2.5 sensor!");
-    while (1) delay(10);
-  }
-
+  analogSetAttenuation(ADC_11db); // set attenuation to configure most accurate ~.15-2.5V sensing on ADC
+  pmsSerial.begin(9600); // start PMS5003 sensor serial stream
+  
   // Set up oversampling and filter initialization
   bme.setTemperatureOversampling(BME680_OS_8X);
   bme.setHumidityOversampling(BME680_OS_2X);
@@ -218,6 +362,7 @@ void setup() {
 
   // Add constant tags - only once
   sensor.addTag("device", DEVICE);
+  sensor.addTag("location", "Greenhouse");
 
   // Check server connection
   if (client.validateConnection()) {
@@ -233,17 +378,18 @@ void setup() {
 
 void loop() {
 
-  air_data_struct air_data;
-  collectData(10, 1000, air_data);
+  // collect data with error handling, 10 samples 1s each
+  collectData(10, 1000);
 
-  // Store measured value into point
+  // Clear and report all data fields
   sensor.clearFields();
-  // Report RSSI of currently connected network
-  sensor.addField("Temperature (°C)", air_data.temp);
-  sensor.addField("Pressure (atm)", air_data.pressure);
-  sensor.addField("Humidity (%)", air_data.humidity);
-  sensor.addField("VOC Gas (kOhm)", air_data.VOC);
-  sensor.addField("PM2.5 AQI", air_data.AQI);
+  sensor.addField("Temperature (°C)", output_data.temp);
+  sensor.addField("Pressure (atm)", output_data.pressure);
+  sensor.addField("Humidity (%)", output_data.humidity);
+  sensor.addField("VOC Gas (kOhm)", output_data.VOC);
+  sensor.addField("PM2.5 AQI", output_data.AQI);
+  sensor.addField("Brightness (lux)", output_data.lux);
+
   // Print what are we exactly writing
   Serial.print("Writing: ");
   Serial.println(client.pointToLineProtocol(sensor));
@@ -253,93 +399,9 @@ void loop() {
   }
   // Write point
   if (!client.writePoint(sensor)) {
+    
     Serial.print("InfluxDB write failed: ");
     Serial.println(client.getLastErrorMessage());
   }  
-
-/* --- Old data Acquition 
-   PM25_AQI_Data data;
-
-  // Tell BME680 to begin measurement.
-  unsigned long endTime = bme.beginReading();
-  if (endTime == 0) {
-    Serial.println(F("Failed to begin reading :("));
-    return;
-  }
-  Serial.print(F("Reading started at "));
-  Serial.print(millis());
-  Serial.print(F(" and will finish at "));
-  Serial.println(endTime);
-
-  if (! aqi.read(&data)) {
-    Serial.println("Could not read from AQI");
-    delay(500);  // try again in a bit!
-    return;
-  } else {
-    Serial.println("Read PM Sensor data");
-  }
-
-  // delay(50); // This represents parallel work.
-  // There's no need to delay() until millis() >= endTime: bme.endReading()
-  // takes care of that. It's okay for parallel work to take longer than
-  // BME680's measurement time.
-
-  // Obtain measurement results from BME680. Note that this operation isn't
-  // instantaneous even if milli() >= endTime due to I2C/SPI latency.
-  if (!bme.endReading()) {
-    Serial.println(F("Failed to complete reading :("));
-    return;
-  }
-  Serial.print(F("Reading completed at "));
-  Serial.println(millis());
-
-  Serial.print(F("Temperature = "));
-  Serial.print(bme.temperature);
-  Serial.println(F(" *C"));
-
-  Serial.print(F("Pressure = "));
-  Serial.print(bme.pressure / 100.0);
-  Serial.println(F(" hPa"));
-
-  Serial.print(F("Humidity = "));
-  Serial.print(bme.humidity);
-  Serial.println(F(" %"));
-
-  Serial.print(F("Gas = "));
-  Serial.print(bme.gas_resistance / 1000.0);
-  Serial.println(F(" KOhms"));
-
-  Serial.print(F("Approx. Altitude = "));
-  Serial.print(bme.readAltitude(SEALEVELPRESSURE_HPA));
-  Serial.println(F(" m"));
-  
-  Serial.print("Air Quality Index: ");
-  Serial.println(getAQI(data.pm25_standard));
-  Serial.println();
-  Serial.println();
- 
-  // Store measured value into point
-  sensor.clearFields();
-  // Report RSSI of currently connected network
-  sensor.addField("Temperature (°C)", bme.temperature);
-  sensor.addField("Pressure (atm)", bme.pressure/101325.0);
-  sensor.addField("Humidity (%)", bme.humidity);
-  sensor.addField("VOC Gas (kOhm)", bme.gas_resistance/1000.0);
-  sensor.addField("PM2.5 AQI", getAQI(data.pm25_standard));
-  // Print what are we exactly writing
-  Serial.print("Writing: ");
-  Serial.println(client.pointToLineProtocol(sensor));
-  // If no Wifi signal, try to reconnect it
-  if (wifiMulti.run() != WL_CONNECTED) {
-    Serial.println("Wifi connection lost");
-  }
-  // Write point
-  if (!client.writePoint(sensor)) {
-    Serial.print("InfluxDB write failed: ");
-    Serial.println(client.getLastErrorMessage());
-  }  
-  
-  delay(10000);
-   ---- */
 
 }
