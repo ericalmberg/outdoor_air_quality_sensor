@@ -255,12 +255,20 @@ void collectData(int samples, int delay_time){
           output_data.pressure += (bme.pressure/101325.0);
           output_data.humidity += bme.humidity;
           output_data.VOC += (bme.gas_resistance/1000.0);  
+          Serial.print("write BME - temp: ");
+          Serial.print(bme.temperature);
+          Serial.print(" pressure: ");
+          Serial.print(bme.pressure/101325.0);
+          Serial.print(" humidity: ");
+          Serial.print(bme.humidity);
+          Serial.print(" VOC (kOhm): ");
+          Serial.println(bme.gas_resistance/1000.0);
       }
       if(writeAQI){
           output_data.AQI += getAQI(data.pm25_standard); 
           Serial.print("write AQI ");
-          Serial.println(getAQI(data.pm25_standard));
-          Serial.print("Raw PM2.5: ");
+          Serial.print(getAQI(data.pm25_standard));
+          Serial.print(" raw PM2.5: ");
           Serial.println(data.pm25_standard);
       } else if (writeAQI){
           AQIsamples --;
@@ -269,6 +277,8 @@ void collectData(int samples, int delay_time){
       float lux_value = 0;
       lux_value = RawToLux(raw_lux);
       output_data.lux += lux_value; 
+      Serial.print("write lux: ");
+      Serial.println(lux_value);
       delay(delay_time);
    }
    if(BMEsamples != 0){
@@ -297,17 +307,15 @@ ESP8266WiFiMulti wifiMulti;
 #endif
 
 // WiFi ssid & pwd
-#define WIFI_SSID "bill_wi_the_science_fi"
-#define WIFI_PASSWORD "adventureeveryday484"
-
-
+#define WIFI_SSID "#"
+#define WIFI_PASSWORD "#"
 
 /* --- InfluxDB Setup --- */
 #include <InfluxDbClient.h>
 
 // InfluxDB  server url. Don't use localhost, always server name or ip address.
 // E.g. http://192.168.1.48:8086 (In InfluxDB 2 UI -> Load Data -> Client Libraries), 
-#define INFLUXDB_URL "http://192.168.1.100:8086"
+#define INFLUXDB_URL "http://192.168.2.100:8086"
 // InfluxDB v1 database name 
 #define INFLUXDB_DB_NAME "air_metrics"
 // InfluxDB client instance for InfluxDB 1
