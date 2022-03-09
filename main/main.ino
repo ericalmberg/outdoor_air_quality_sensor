@@ -15,6 +15,7 @@ SoftwareSerial pmsSerial(16, 17);
 //Adafruit_PM25AQI aqi = Adafruit_PM25AQI();
 Adafruit_BME680 bme; // I2C
 
+/*
 // struct for storing raw PMS5003 Particlate matter data
 struct pms5003data {
   uint16_t framelen;
@@ -24,6 +25,7 @@ struct pms5003data {
   uint16_t unused;
   uint16_t checksum;
 };
+*/
 
 // struct to contain all reported data
 struct data_struct {
@@ -32,9 +34,10 @@ struct data_struct {
   float humidity = 0;
   float VOC = 0;
   float lux = 0;
-  int AQI = 0;
+//  int AQI = 0;
 };
- 
+
+ /*
 // Store defined Air Quality Index break points
 int AQIlow[] = {0,51,101,151,201,301};
 int AQIhigh[] = {50,100,150,200,300,500};
@@ -54,6 +57,7 @@ enum AQIcategory
 
 // create globally accessible struct instance to dump raw PM sensor data to
 struct pms5003data data;
+*/
 struct data_struct output_data;
 
 int luxSensorPin = 36;    // select the input pin for the potentiometer
@@ -67,18 +71,18 @@ float RawToLux(float raw)
   return pow(10, logLux);
 }
 
-
+/*
 // based on PM2.5 concentration, get AQI category
 AQIcategory getRange(int pmCount){  
   if (pmCount < PM2_5ConHigh[0])
-  {/* constant-expression */
+  {/* constant-expression 
    return good;
   }
   else if (pmCount < PM2_5ConHigh[1])
   {
     return moderate;
   }
-  else if (pmCount < PM2_5ConHigh[2])/* constant-expression */
+  else if (pmCount < PM2_5ConHigh[2])/* constant-expression 
   {  
     return UFSG;
   }
@@ -138,7 +142,7 @@ boolean readPMSdata(Stream *s) {
     Serial.print("0x"); Serial.print(buffer[i], HEX); Serial.print(", ");
   }
   Serial.println();
-  */
+  
   
   // The data comes in endian'd, this solves it so it works on all platforms
   uint16_t buffer_u16[15];
@@ -157,16 +161,18 @@ boolean readPMSdata(Stream *s) {
   // success!
   return true;
 }
+*/
+
 
 void reset_output_data(){
     output_data.temp = 0;
     output_data.pressure = 0;
     output_data.humidity = 0;
     output_data.VOC = 0;
-    output_data.AQI = 0;
+   // output_data.AQI = 0;
     output_data.lux = 0;
 }
-
+/*
 bool retry_logic(){
     for(int j = 1; j <= 5; j++){
        Serial.print("retry #");
@@ -189,10 +195,11 @@ bool retry_logic(){
     delay(1000);
     return false;
 }
+*/
 
 // oversample & average out data 
 void collectData(int samples, int delay_time){
-   float AQIsamples = samples;
+   //float AQIsamples = samples;
    float BMEsamples = samples;
    int last_reading = 0;
    int bad_read_count = 0;
@@ -200,7 +207,7 @@ void collectData(int samples, int delay_time){
    reset_output_data();
        
    for(int i = 0; i < samples; i++){
-      bool writeAQI = true;
+//      bool writeAQI = true;
       bool writeBME = true;
   
       // Tell BME680 to begin measurement.
@@ -222,7 +229,7 @@ void collectData(int samples, int delay_time){
         }
       }
       delay(100);
-
+      /*
       // Obtain measurements from PM2.5 sensor, handles Serial disconnect and hung condition bugs
       if (!readPMSdata(&pmsSerial)) {
         Serial.println("Could not read from AQI");
@@ -246,7 +253,7 @@ void collectData(int samples, int delay_time){
       } else {
          last_reading = data.pm25_standard;
          bad_read_count = 0;
-      }
+      }*/
 
 
       // Add datapoints to sum if they were successfully read
@@ -264,7 +271,7 @@ void collectData(int samples, int delay_time){
           Serial.print(" VOC (kOhm): ");
           Serial.println(bme.gas_resistance/1000.0);
       }
-      if(writeAQI){
+      /*if(writeAQI){
           output_data.AQI += getAQI(data.pm25_standard); 
           Serial.print("write AQI ");
           Serial.print(getAQI(data.pm25_standard));
@@ -272,7 +279,7 @@ void collectData(int samples, int delay_time){
           Serial.println(data.pm25_standard);
       } else if (writeAQI){
           AQIsamples --;
-      }
+      }*/
       float raw_lux = analogRead(luxSensorPin);
       float lux_value = 0;
       lux_value = RawToLux(raw_lux);
@@ -287,9 +294,9 @@ void collectData(int samples, int delay_time){
       output_data.humidity /= BMEsamples;
       output_data.VOC /= BMEsamples; 
    }
-   if(AQIsamples != 0){
+   /*if(AQIsamples != 0){
       output_data.AQI /= AQIsamples;
-   }
+   }*/
    output_data.lux /= samples;
 }
 
@@ -370,7 +377,9 @@ void setup() {
 
   // Add constant tags - only once
   sensor.addTag("device", DEVICE);
+  sensor.addTag("type", "temp-humidity-voc-lux");
   sensor.addTag("location", "Greenhouse");
+
 
   // Check server connection
   if (client.validateConnection()) {
@@ -395,7 +404,7 @@ void loop() {
   sensor.addField("Pressure (atm)", output_data.pressure);
   sensor.addField("Humidity (%)", output_data.humidity);
   sensor.addField("VOC Gas (kOhm)", output_data.VOC);
-  sensor.addField("PM2.5 AQI", output_data.AQI);
+  //sensor.addField("PM2.5 AQI", output_data.AQI);
   sensor.addField("Brightness (lux)", output_data.lux);
 
   // Print what are we exactly writing
