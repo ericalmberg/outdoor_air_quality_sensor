@@ -1,294 +1,90 @@
 /* --- Sensor Setup --- */
-//#include "Adafruit_PM25AQI.h"
+#include <Arduino.h>
 #include <Wire.h>
-#include <SPI.h>
-#include "math.h"
-#include <Adafruit_Sensor.h>
-#include "Adafruit_BME680.h"
-#include <SoftwareSerial.h>
-
-// define the default sea-level pressure for altitude calculations
-#define SEALEVELPRESSURE_HPA (1013.25)
-
-// setup software serial for talking to PM2.5 sensor
-SoftwareSerial pmsSerial(16, 17);
-//Adafruit_PM25AQI aqi = Adafruit_PM25AQI();
-Adafruit_BME680 bme; // I2C
-
-// struct for storing raw PMS5003 Particlate matter data
-struct pms5003data {
-  uint16_t framelen;
-  uint16_t pm10_standard, pm25_standard, pm100_standard;
-  uint16_t pm10_env, pm25_env, pm100_env;
-  uint16_t particles_03um, particles_05um, particles_10um, particles_25um, particles_50um, particles_100um;
-  uint16_t unused;
-  uint16_t checksum;
-};
+#include "Adafruit_VEML7700.h"
+#include "Adafruit_SHT31.h"
 
 // struct to contain all reported data
 struct data_struct {
   float temp = 0;
-  float pressure = 0;
+  float soil_temp = 0;
+  float soil_moisture = 0;
   float humidity = 0;
-  float VOC = 0;
   float lux = 0;
-  int AQI = 0;
-};
- 
-// Store defined Air Quality Index break points
-int AQIlow[] = {0,51,101,151,201,301};
-int AQIhigh[] = {50,100,150,200,300,500};
-double PM2_5ConLow[] ={0,12.1,35.5,55.5,150.5,250.5}; 
-double PM2_5ConHigh[] ={12.0,35.4,55.4,150.4,250.4,500.4};
-
-// Store defined Air Quality Index categories associated with break points
-enum AQIcategory 
-{   good,
-    moderate, 
-    UFSG,  //unhealthy for sensitive groups
-    unhealthy,
-    veryUnhealthy,
-    hazardous,
-    invalid 
 };
 
-// create globally accessible struct instance to dump raw PM sensor data to
-struct pms5003data data;
+
+
+// instantiate globals
+Adafruit_VEML7700 veml = Adafruit_VEML7700();
+Adafruit_SHT31 sht31 = Adafruit_SHT31();
 struct data_struct output_data;
-
-int luxSensorPin = 36;    // select the input pin for the potentiometer
-
-float rawRange = 4096; // 3.3v
-float logRange = 5.0; // 3.3v = 10^5 lux
-
-float RawToLux(float raw)
-{
-  float logLux = raw * logRange / rawRange;
-  return pow(10, logLux);
-}
+bool enableHeater = false;
 
 
-// based on PM2.5 concentration, get AQI category
-AQIcategory getRange(int pmCount){  
-  if (pmCount < PM2_5ConHigh[0])
-  {/* constant-expression */
-   return good;
-  }
-  else if (pmCount < PM2_5ConHigh[1])
-  {
-    return moderate;
-  }
-  else if (pmCount < PM2_5ConHigh[2])/* constant-expression */
-  {  
-    return UFSG;
-  }
-  else if (pmCount < PM2_5ConHigh[3])
-  {
-    return unhealthy;
-  }
-  else if (pmCount < PM2_5ConHigh[4])
-  {
-    return veryUnhealthy;
-  }
-  else if (pmCount < PM2_5ConHigh[5])
-  {
-    return hazardous;
-  }
-  return invalid;
-}
-
-// based on PM2.5 concentration, get Air Quality Index number (0-500)
-int getAQI(int pmCount){
-  AQIcategory AQIcat = getRange(pmCount);
-  if(AQIcat == invalid){
-    return 999;
-  }
-  int AQI = ((AQIhigh[AQIcat] - AQIlow[AQIcat])/(PM2_5ConHigh[AQIcat]-PM2_5ConLow[AQIcat]))*(pmCount-PM2_5ConLow[AQIcat])+AQIlow[AQIcat];
-  return AQI;
-}
-
-// Serial interface funtion to read PM2.5 data to fix bug of Adafruit lib (not reading after a while)
-boolean readPMSdata(Stream *s) {
-  if (! s->available()) {
-    return false;
-  }
-  
-  // Read a byte at a time until we get to the special '0x42' start-byte
-  if (s->peek() != 0x42) {
-    s->read();
-    return false;
-  }
- 
-  // Now read all 32 bytes
-  if (s->available() < 32) {
-    return false;
-  }
-    
-  uint8_t buffer[32];    
-  uint16_t sum = 0;
-  s->readBytes(buffer, 32);
- 
-  // get checksum ready
-  for (uint8_t i=0; i<30; i++) {
-    sum += buffer[i];
-  }
- 
-  /* debugging
-  for (uint8_t i=2; i<32; i++) {
-    Serial.print("0x"); Serial.print(buffer[i], HEX); Serial.print(", ");
-  }
-  Serial.println();
-  */
-  
-  // The data comes in endian'd, this solves it so it works on all platforms
-  uint16_t buffer_u16[15];
-  for (uint8_t i=0; i<15; i++) {
-    buffer_u16[i] = buffer[2 + i*2 + 1];
-    buffer_u16[i] += (buffer[2 + i*2] << 8);
-  }
- 
-  // put it into a nice struct :)
-  memcpy((void *)&data, (void *)buffer_u16, 30);
- 
-  if (sum != data.checksum) {
-    Serial.println("Checksum failure");
-    return false;
-  }
-  // success!
-  return true;
-}
 
 void reset_output_data(){
     output_data.temp = 0;
-    output_data.pressure = 0;
     output_data.humidity = 0;
-    output_data.VOC = 0;
-    output_data.AQI = 0;
     output_data.lux = 0;
 }
 
-bool retry_logic(){
-    for(int j = 1; j <= 5; j++){
-       Serial.print("retry #");
-       Serial.println(j);
-       if (!readPMSdata(&pmsSerial)){  
-          // if we are not reading error condition, exit and return true that we got a valid datapoint
-          if(data.pm25_standard < 5000 && data.pm25_standard != 999 && data.pm25_standard != 66 && data.pm25_standard != 28 && data.pm25_standard != 151 && data.pm25_standard != 256 && data.pm25_standard != 322 && data.pm25_standard != 512 && data.pm25_standard != 578 && data.pm25_standard != 834 && data.pm25_standard != 768 && data.pm25_standard != 1024 && data.pm25_standard != 1090 && data.pm25_standard != 1280 && data.pm25_standard != 1346 && data.pm25_standard != 1536 && data.pm25_standard != 1858 && data.pm25_standard != 2048 && data.pm25_standard != 2114 && data.pm25_standard != 2304 && data.pm25_standard != 2370 && data.pm25_standard != 2560 && data.pm25_standard != 3072 && data.pm25_standard != 3138 && data.pm25_standard != 4096 && data.pm25_standard != 4674 && data.pm25_standard != 19712){
-              return true;
-          }
-       }
-       delay(500);
-    }
-    
-   // if all else fails restart serial connection
-    pmsSerial.end();
-    Serial.println("restarting PMS sensor serial...");
-    delay(1000);
-    pmsSerial.begin(9600);
-    while(!pmsSerial);
-    delay(1000);
-    return false;
-}
+
 
 // oversample & average out data 
 void collectData(int samples, int delay_time){
-   float AQIsamples = samples;
-   float BMEsamples = samples;
-   int last_reading = 0;
-   int bad_read_count = 0;
-   delay_time -= 300;
+   float SHTsamples = samples;
    reset_output_data();
        
    for(int i = 0; i < samples; i++){
-      bool writeAQI = true;
-      bool writeBME = true;
+      bool writeSHT = true;
   
-      // Tell BME680 to begin measurement.
-      unsigned long endTime = bme.beginReading();
-      if (endTime == 0) {
-          Serial.println(F("Failed to begin reading :("));
-          BMEsamples --;
-          writeBME = false;
-      }
-      delay(100);
+      // get SHT temp & humidity measurement.
+      float t = sht31.readTemperature();
+      float h = sht31.readHumidity();
 
-      // Obtain measurement results from BME680. Note that this operation isn't
-      // instantaneous even if milli() >= endTime due to I2C/SPI latency.
-      if (!bme.endReading()) {
-        Serial.println(F("Failed to complete reading :("));
-        if(writeBME){
-          BMEsamples --;
-          writeBME = false;
+      // check temp reading validity
+      if (! isnan(t)) {  // check if 'is not a number'
+        //Serial.print("Temp *C = "); Serial.print(t);
+      } else { 
+        if(writeSHT){
+          SHTsamples --;
+          writeSHT = false;
+          Serial.println("Failed to read temperature");
         }
       }
-      delay(100);
 
-      // Obtain measurements from PM2.5 sensor, handles Serial disconnect and hung condition bugs
-      if (!readPMSdata(&pmsSerial)) {
-        Serial.println("Could not read from AQI");
-        AQIsamples --;
-        writeAQI = false;
-        delay(50);
-        //retry logic
-        if(retry_logic()){
-          AQIsamples ++;
-          writeAQI = true;
+      // check humidity reading validity
+      if (! isnan(h)) {  // check if 'is not a number'
+        //Serial.print("Hum. % = "); Serial.println(h);
+      } else { 
+        if(writeSHT){
+          SHTsamples --;
+          writeSHT = false;
+          Serial.println("Failed to read humidity");
         }
       }
-      if(data.pm25_standard > 100 && data.pm25_standard == last_reading) {
-         Serial.println("Suspected bad AQI reading");
-         bad_read_count ++;
-         if(bad_read_count >=5){
-            AQIsamples -= 5;
-            writeAQI = false;
-            output_data.AQI = 0;
-         }
-      } else {
-         last_reading = data.pm25_standard;
-         bad_read_count = 0;
-      }
-
-
+            
       // Add datapoints to sum if they were successfully read
-      if(writeBME){
-          output_data.temp += bme.temperature;
-          output_data.pressure += (bme.pressure/101325.0);
-          output_data.humidity += bme.humidity;
-          output_data.VOC += (bme.gas_resistance/1000.0);  
-          Serial.print("write BME - temp: ");
-          Serial.print(bme.temperature);
-          Serial.print(" pressure: ");
-          Serial.print(bme.pressure/101325.0);
+      if(writeSHT){
+          output_data.temp += t;
+          output_data.humidity += h;
+          Serial.print("write SHT - temp: ");
+          Serial.print(t);
           Serial.print(" humidity: ");
-          Serial.print(bme.humidity);
-          Serial.print(" VOC (kOhm): ");
-          Serial.println(bme.gas_resistance/1000.0);
+          Serial.print(h);
       }
-      if(writeAQI){
-          output_data.AQI += getAQI(data.pm25_standard); 
-          Serial.print("write AQI ");
-          Serial.print(getAQI(data.pm25_standard));
-          Serial.print(" raw PM2.5: ");
-          Serial.println(data.pm25_standard);
-      } else if (writeAQI){
-          AQIsamples --;
-      }
-      float raw_lux = analogRead(luxSensorPin);
-      float lux_value = 0;
-      lux_value = RawToLux(raw_lux);
+      
+      // get Lux reading from VEML
+      float lux_value = veml.readLux();
       output_data.lux += lux_value; 
-      Serial.print("write lux: ");
+      Serial.print(" write lux: ");
       Serial.println(lux_value);
       delay(delay_time);
    }
-   if(BMEsamples != 0){
-      output_data.temp /= BMEsamples;
-      output_data.pressure /= BMEsamples;
-      output_data.humidity /= BMEsamples;
-      output_data.VOC /= BMEsamples; 
-   }
-   if(AQIsamples != 0){
-      output_data.AQI /= AQIsamples;
+   if(SHTsamples != 0){
+      output_data.temp /= SHTsamples;
+      output_data.humidity /= SHTsamples;
    }
    output_data.lux /= samples;
 }
@@ -340,20 +136,33 @@ void setup() {
   Serial.begin(9600);
   while (!Serial);
 
-  if (!bme.begin()) {
-    Serial.println(F("Could not find a valid BME680 sensor, check wiring!"));
+  // start veml7700 sensor via i2c
+  if (!veml.begin()) {
+    Serial.println("VEML7700 not found");
     while (1);
   }
+  Serial.println("VEML7700 found");
 
-  analogSetAttenuation(ADC_11db); // set attenuation to configure most accurate ~.15-2.5V sensing on ADC
-  pmsSerial.begin(9600); // start PMS5003 sensor serial stream
-  
-  // Set up oversampling and filter initialization
-  bme.setTemperatureOversampling(BME680_OS_8X);
-  bme.setHumidityOversampling(BME680_OS_2X);
-  bme.setPressureOversampling(BME680_OS_4X);
-  bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
-  bme.setGasHeater(320, 150); // 320*C for 150 ms
+  // set gain to 1/8 and integration time to 25ms to achieve maximum resolution to 120klux
+  // lux scales linearly with increases to IT and gain i.e. 100ms IT = 30klux max reading
+  veml.setGain(VEML7700_GAIN_1_8);
+  veml.setIntegrationTime(VEML7700_IT_25MS);
+  veml.powerSaveEnable(true);
+  veml.setPowerSaveMode(VEML7700_POWERSAVE_MODE1);
+
+  //start sht31-d sensor via i2c
+  if (! sht31.begin(0x44)) {   // Set to 0x45 for alternate i2c addr
+     Serial.println("Couldn't find SHT31");
+  } else {
+    Serial.println("SHT31 found");
+  }
+  Serial.print("Heater Enabled State: ");
+  if (sht31.isHeaterEnabled())
+    Serial.println("ENABLED");
+  else
+    Serial.println("DISABLED");
+
+
 
   // Connect WiFi
   Serial.println("Connecting to WiFi");
@@ -363,14 +172,16 @@ void setup() {
     Serial.print(".");
     delay(500);
   }
-  Serial.println();
+  Serial.print("My ip address: ");
+  Serial.println(WiFi.localIP());
 
   // Set InfluxDB 1 authentication params
   //client.setConnectionParamsV1(INFLUXDB_URL, INFLUXDB_DB_NAME, INFLUXDB_USER, INFLUXDB_PASSWORD);
 
   // Add constant tags - only once
   sensor.addTag("device", DEVICE);
-  sensor.addTag("location", "Greenhouse");
+  //sensor.addTag("type", "temp-humidity-lux");
+  sensor.addTag("location", "test");
 
   // Check server connection
   if (client.validateConnection()) {
@@ -381,7 +192,7 @@ void setup() {
     Serial.println(client.getLastErrorMessage());
   }
   //delay to allow sensors to boot
-  delay(5000);
+  delay(1000);
 }
 
 void loop() {
@@ -392,10 +203,7 @@ void loop() {
   // Clear and report all data fields
   sensor.clearFields();
   sensor.addField("Temperature (°C)", output_data.temp);
-  sensor.addField("Pressure (atm)", output_data.pressure);
   sensor.addField("Humidity (%)", output_data.humidity);
-  sensor.addField("VOC Gas (kOhm)", output_data.VOC);
-  sensor.addField("PM2.5 AQI", output_data.AQI);
   sensor.addField("Brightness (lux)", output_data.lux);
 
   // Print what are we exactly writing
