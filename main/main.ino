@@ -103,8 +103,8 @@ ESP8266WiFiMulti wifiMulti;
 #endif
 
 // WiFi ssid & pwd
-#define WIFI_SSID "#"
-#define WIFI_PASSWORD "#"
+#define WIFI_SSID "bill_wi_the_science_fi"
+#define WIFI_PASSWORD "adventureeveryday484"
 
 /* --- InfluxDB Setup --- */
 #include <InfluxDbClient.h>
@@ -133,7 +133,7 @@ Point sensor("air_status");
 
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   while (!Serial);
 
   // start veml7700 sensor via i2c
@@ -146,9 +146,9 @@ void setup() {
   // set gain to 1/8 and integration time to 25ms to achieve maximum resolution to 120klux
   // lux scales linearly with increases to IT and gain i.e. 100ms IT = 30klux max reading
   veml.setGain(VEML7700_GAIN_1_8);
-  veml.setIntegrationTime(VEML7700_IT_25MS);
-  veml.powerSaveEnable(true);
-  veml.setPowerSaveMode(VEML7700_POWERSAVE_MODE1);
+  veml.setIntegrationTime(VEML7700_IT_100MS);
+  //veml.powerSaveEnable(true);
+  //veml.setPowerSaveMode(VEML7700_POWERSAVE_MODE1);
 
   //start sht31-d sensor via i2c
   if (! sht31.begin(0x44)) {   // Set to 0x45 for alternate i2c addr
@@ -163,7 +163,7 @@ void setup() {
     Serial.println("DISABLED");
 
 
-
+/*
   // Connect WiFi
   Serial.println("Connecting to WiFi");
   WiFi.mode(WIFI_STA);
@@ -177,12 +177,13 @@ void setup() {
 
   // Set InfluxDB 1 authentication params
   //client.setConnectionParamsV1(INFLUXDB_URL, INFLUXDB_DB_NAME, INFLUXDB_USER, INFLUXDB_PASSWORD);
-
+*/
+  wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
   // Add constant tags - only once
   sensor.addTag("device", DEVICE);
-  //sensor.addTag("type", "temp-humidity-lux");
-  sensor.addTag("location", "test");
-
+  sensor.addTag("type", "temp-humidity-lux");
+  sensor.addTag("location", "test"); 
+/*
   // Check server connection
   if (client.validateConnection()) {
     Serial.print("Connected to InfluxDB: ");
@@ -191,14 +192,37 @@ void setup() {
     Serial.print("InfluxDB connection failed: ");
     Serial.println(client.getLastErrorMessage());
   }
+  */
   //delay to allow sensors to boot
-  delay(1000);
+  delay(100);
 }
 
-void loop() {
+int SleepSecs = 9;
+int uS_TO_S_FACTOR = 1000000;
 
+void loop() {
+  // connect to wifi on wake from sleep
+  Serial.println("Connecting to WiFi");
+  WiFi.mode(WIFI_STA);
+  delay(10);
+  int count = 0;
+  while (wifiMulti.run() != WL_CONNECTED && count < 10) {
+    Serial.print(".");
+    count ++;
+    delay(500);
+  } 
+  
+  Serial.print("My ip address: ");
+  Serial.println(WiFi.localIP());
+  if (client.validateConnection()) {
+    Serial.print("Connected to InfluxDB: ");
+    Serial.println(client.getServerUrl());
+  } else {
+    Serial.print("InfluxDB connection failed: ");
+    Serial.println(client.getLastErrorMessage());
+  }
   // collect data with error handling, 10 samples 1s each
-  collectData(10, 1000);
+  collectData(10, 100);
 
   // Clear and report all data fields
   sensor.clearFields();
@@ -218,6 +242,9 @@ void loop() {
     
     Serial.print("InfluxDB write failed: ");
     Serial.println(client.getLastErrorMessage());
-  }  
-
+  }
+  Serial.println("going to sleep...");
+  esp_sleep_enable_timer_wakeup(SleepSecs * uS_TO_S_FACTOR);
+  delay(100);
+  esp_light_sleep_start();
 }
