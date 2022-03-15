@@ -20,6 +20,10 @@ Adafruit_VEML7700 veml = Adafruit_VEML7700();
 Adafruit_SHT31 sht31 = Adafruit_SHT31();
 struct data_struct output_data;
 bool enableHeater = false;
+int boost_en_pin = 21;
+int SHT_pwr_pin = 13;
+const int soil_temp_pin = 34;
+const int soil_moisture_pin = 39;
 
 
 
@@ -27,12 +31,42 @@ void reset_output_data(){
     output_data.temp = 0;
     output_data.humidity = 0;
     output_data.lux = 0;
+    output_data.soil_temp = 0;
+    output_data.soil_moisture = 0;
 }
 
-
+void read_soil(){
+  float soil_temp = 0.0;
+  float soil_moisture = 0.0;
+  float soil_moisture_raw = 0.0;
+  soil_temp = (analogRead(soil_temp_pin)*3.3/4096.0)*41.67-40;
+  soil_moisture_raw = analogRead(soil_moisture_pin)*3.3/4096.0;
+  //soil_moisture_raw = soil_moisture_raw*3.3/4096.0;
+  if(soil_moisture_raw < 1.1){
+    soil_moisture = 10.0*soil_moisture_raw-1;
+  } else if (soil_moisture_raw < 1.3){
+    soil_moisture = 25.0*soil_moisture_raw-17.5;
+  } else if (soil_moisture_raw < 1.82){
+    soil_moisture = 48.08*soil_moisture_raw-47.5;
+  } else if (soil_moisture_raw < 2.2){
+    soil_moisture = 26.32*soil_moisture_raw-7.89;
+  } else {
+    soil_moisture = 62.5*soil_moisture_raw-87.5;
+  }
+  output_data.soil_temp += soil_temp;
+  output_data.soil_moisture += soil_moisture;
+  Serial.print("Write soil - temp: ");
+  Serial.print(soil_temp);
+  Serial.print(" moisture : ");
+  Serial.print(soil_moisture);
+}
 
 // oversample & average out data 
 void collectData(int samples, int delay_time){
+   digitalWrite(SHT_pwr_pin, HIGH);
+   digitalWrite(boost_en_pin, HIGH);
+   // delay to let sensors stabilize
+   delay(1000);
    float SHTsamples = samples;
    reset_output_data();
        
@@ -64,6 +98,9 @@ void collectData(int samples, int delay_time){
           Serial.println("Failed to read humidity");
         }
       }
+
+      // read soil moisture & temp
+      read_soil();
             
       // Add datapoints to sum if they were successfully read
       if(writeSHT){
@@ -87,6 +124,10 @@ void collectData(int samples, int delay_time){
       output_data.humidity /= SHTsamples;
    }
    output_data.lux /= samples;
+   output_data.soil_moisture /= samples;
+   output_data.soil_temp /= samples;
+   digitalWrite(SHT_pwr_pin, LOW);
+   digitalWrite(boost_en_pin, LOW);
 }
 
 
@@ -103,8 +144,8 @@ ESP8266WiFiMulti wifiMulti;
 #endif
 
 // WiFi ssid & pwd
-#define WIFI_SSID "bill_wi_the_science_fi"
-#define WIFI_PASSWORD "adventureeveryday484"
+#define WIFI_SSID "#"
+#define WIFI_PASSWORD "#"
 
 /* --- InfluxDB Setup --- */
 #include <InfluxDbClient.h>
@@ -133,16 +174,24 @@ Point sensor("air_status");
 
 
 void setup() {
+  analogSetAttenuation(ADC_11db);
   Serial.begin(115200);
   while (!Serial);
-
+  
+  pinMode(boost_en_pin, OUTPUT);
+  pinMode(SHT_pwr_pin, OUTPUT);
+  pinMode(soil_temp_pin, INPUT);
+  pinMode(soil_moisture_pin, INPUT);
+  digitalWrite(SHT_pwr_pin, HIGH);
+  delay(1);
+  
   // start veml7700 sensor via i2c
   if (!veml.begin()) {
     Serial.println("VEML7700 not found");
     while (1);
   }
   Serial.println("VEML7700 found");
-
+  
   // set gain to 1/8 and integration time to 25ms to achieve maximum resolution to 120klux
   // lux scales linearly with increases to IT and gain i.e. 100ms IT = 30klux max reading
   veml.setGain(VEML7700_GAIN_1_8);
@@ -229,7 +278,9 @@ void loop() {
   sensor.addField("Temperature (°C)", output_data.temp);
   sensor.addField("Humidity (%)", output_data.humidity);
   sensor.addField("Brightness (lux)", output_data.lux);
-
+  sensor.addField("Soil Temperature (°C)", output_data.soil_temp);
+  sensor.addField("Soil Moisture(%)", output_data.soil_moisture);
+  
   // Print what are we exactly writing
   Serial.print("Writing: ");
   Serial.println(client.pointToLineProtocol(sensor));
